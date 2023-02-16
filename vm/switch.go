@@ -20,6 +20,15 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 )
 
+/*
+#cgo CFLAGS: -Wall
+extern void nsenter();
+void __attribute__((constructor)) init(void) {
+	nsenter();
+}
+*/
+import "C"
+
 var (
 	debug    bool
 	tapIface string
@@ -37,12 +46,9 @@ func main() {
 	flag.StringVar(&tapIface, "tap-interface", defaultTapDevice, "tap interface name")
 	flag.Parse()
 
-	f, err := os.OpenFile("/var/log/network-switch", os.O_WRONLY|os.O_CREATE, 0755)
-	if err != nil {
-		logrus.Fatal(err)
-	}
-	logrus.SetOutput(f)
-	connFile := os.NewFile(uintptr(3), "connection")
+	logrus.SetLevel(logrus.DebugLevel)
+
+	connFile := os.NewFile(uintptr(3), "vsock connection")
 	defer connFile.Close()
 
 	// this should never happend

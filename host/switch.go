@@ -143,7 +143,20 @@ func run(ctx context.Context, g *errgroup.Group, config *types.Configuration, ln
 		return err
 	}
 	logrus.Info("waiting for clients...")
-	httpServe(ctx, g, ln, withProfiler(vn))
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				logrus.Errorf("failed to accept pipe: %v", err)
+			}
+			err = vn.AcceptQemu(ctx, conn)
+			if err != nil {
+				logrus.Errorf("pipe closed: %v", err)
+			} else {
+				logrus.Infof("Accepted connection: ctx=%+v conn=%+v", ctx, conn)
+			}
+		}
+	}()
 
 	vnLn, err := vn.Listen("tcp", fmt.Sprintf("%s:80", gatewayIP))
 	if err != nil {

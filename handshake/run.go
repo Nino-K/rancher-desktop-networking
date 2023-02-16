@@ -2,18 +2,20 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
 	"strconv"
 	"time"
 
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netns"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/linuxkit/virtsock/pkg/vsock"
 )
+
 
 var (
 	debug      bool
@@ -52,16 +54,9 @@ func main() {
 	if err != nil {
 		logrus.Fatalf("cannot connect to host: %v", err)
 	}
-	//defer conn.Close() // intentionally not closing the conn
-	// because the child process will
-	f, err := conn.File()
-	if err != nil {
-		logrus.Fatalf("cannot get the connection file: %v", err)
-	}
+	logrus.Debugf("dialed host %v:%d: %+v", vsock.CIDHost, vsockDialPort, conn)
 
-	// Lock the OS Thread so we don't accidentally switch namespaces
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
+	errGroup := errgroup.Group{}
 
 	// setup network namespace
 	_, err = configureNamespace("rd1")
@@ -69,13 +64,8 @@ func main() {
 		logrus.Fatal(err)
 	}
 
-//	err = netns.Set(rdNS)
-//	if err != nil {
-//		logrus.Fatal(err)
-//	}
-
 	// exec /usr/bin/unshare --net=/run/netns/rd1 --pid --mount-proc --fork --propagation slave  "${0}"
-	unshareCmd := exec.Command("/usr/bin/nsenter", "-n/run/netns/rd1", "-F",  "/usr/bin/unshare", "--pid", "--mount-proc", "--fork", "--propagation", "slave", unshareArg)
+	unshareCmd := exec.Command("/usr/bin/nsenter", "-n/run/netns/rd1", "-F",  "/usr/bin/unshare", "--pid", "--mount-proc", "--fork", "--propagation", "slave", "/usr/bin/nohup", unshareArg)
 	unshareCmd.Stdin = os.Stdin
 	unshareCmd.Stdout = os.Stdout
 	unshareCmd.Stderr = os.Stderr
@@ -99,16 +89,38 @@ func main() {
 	// this is due to the limitaion in the golang's runtime
 	// all the sub process could potentiall start in the original
 	// namespace
-	subProcess := exec.Command(childPath)
-	subProcess.Stdin = os.Stdin
-	subProcess.Stdout = os.Stdout
-	subProcess.Stderr = os.Stderr
-	subProcess.ExtraFiles = []*os.File{f}
+
+	subProcess := exec.Command("/usr/local/bin/vm-switch", "-debug")
+	logFile, err := os.Create("/var/logs/vm-switch.log")
+	if err != nil {
+		logrus.Errorf("failed to create log file for vm-switch: %v", err)
+	} else {
+		subProcess.Stdout = logFile
+		subProcess.Stderr = logFile
+	}
+	connFile, err := conn.File()
+	if err != nil {
+		logrus.Fatalf("failed to get vsock connection fd: %v", err)
+	}
+	subProcess.ExtraFiles = []*os.File{ connFile}
 	if err := subProcess.Start(); err != nil {
 		logrus.Fatalf("could not start the child process: %v", err)
 	}
-
+	logFile.Close()
 	logrus.Infof("successfully started the child process vm-switch running with a PID: %v", subProcess.Process.Pid)
+
+	errGroup.Go(func() error {
+		if err := subProcess.Wait(); err != nil {
+			return fmt.Errorf("vm-switch exited with error: %w", err)
+		}
+		return nil
+	})
+
+	if err = errGroup.Wait(); err != nil {
+		logrus.Fatal(err)
+	}
+	logrus.Infof("handshake process done")
+
 }
 
 func listenForHandshake(done chan<- struct{}) {
