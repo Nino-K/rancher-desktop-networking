@@ -8,14 +8,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/linuxkit/virtsock/pkg/vsock"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sync/errgroup"
-
-	"github.com/linuxkit/virtsock/pkg/vsock"
 )
-
 
 var (
 	debug      bool
@@ -28,6 +26,7 @@ const (
 	vsockDialPort      = 6655
 	SeedPhrase         = "github.com/rancher-sandbox/rancher-desktop-networking"
 )
+
 
 func main() {
 	flag.BoolVar(&debug, "debug", false, "enable debug flag")
@@ -42,6 +41,8 @@ func main() {
 	if unshareArg == "" {
 		logrus.Fatal("unshare program arg must be provided")
 	}
+
+	logrus.Info("Starting handhsake...")
 
 	done := make(chan struct{})
 	go listenForHandshake(done)
@@ -64,8 +65,7 @@ func main() {
 		logrus.Fatal(err)
 	}
 
-	// exec /usr/bin/unshare --net=/run/netns/rd1 --pid --mount-proc --fork --propagation slave  "${0}"
-	unshareCmd := exec.Command("/usr/bin/nsenter", "-n/run/netns/rd1", "-F",  "/usr/bin/unshare", "--pid", "--mount-proc", "--fork", "--propagation", "slave", "/usr/bin/nohup", unshareArg)
+	unshareCmd := exec.Command("/usr/bin/nsenter", "-n/run/netns/rd1", "-F",  "/usr/bin/unshare", "--pid", "--mount-proc", "--fork", "--propagation", "slave", unshareArg)
 	unshareCmd.Stdin = os.Stdin
 	unshareCmd.Stdout = os.Stdout
 	unshareCmd.Stderr = os.Stderr
@@ -80,8 +80,8 @@ func main() {
 	if err != nil{
 		logrus.Fatal(err)
 	}
-	logrus.Infof("unshare pid is : %v", unsharePID)
-	logrus.Info("unshare arg is %s", unshareArg)
+	logrus.Infof("unshare pid is: %v", unsharePID)
+	logrus.Infof("unshare arg is: %s", unshareArg)
 
 	// start the child process
 	// the child process will run in the new namespace the reason behind this subprocess
@@ -89,8 +89,7 @@ func main() {
 	// this is due to the limitaion in the golang's runtime
 	// all the sub process could potentiall start in the original
 	// namespace
-
-	subProcess := exec.Command("/usr/local/bin/vm-switch", "-debug")
+	subProcess := exec.Command(childPath, "-debug")
 	logFile, err := os.Create("/var/logs/vm-switch.log")
 	if err != nil {
 		logrus.Errorf("failed to create log file for vm-switch: %v", err)
@@ -107,6 +106,7 @@ func main() {
 		logrus.Fatalf("could not start the child process: %v", err)
 	}
 	logFile.Close()
+
 	logrus.Infof("successfully started the child process vm-switch running with a PID: %v", subProcess.Process.Pid)
 
 	errGroup.Go(func() error {
@@ -120,7 +120,6 @@ func main() {
 		logrus.Fatal(err)
 	}
 	logrus.Infof("handshake process done")
-
 }
 
 func listenForHandshake(done chan<- struct{}) {
@@ -132,17 +131,18 @@ func listenForHandshake(done chan<- struct{}) {
 
 	for {
 		conn, err := l.Accept()
-		if err != nil {
-			logrus.Errorf("listenForHandshake connection accept: %v", err)
-			continue
-		}
-		_, err = conn.Write([]byte(SeedPhrase))
-		if err != nil {
-			logrus.Errorf("listenForHandshake writing CIDHost: %v\n", err)
-		}
-		conn.Close()
-		logrus.Info("successful handshake with host switch")
-		done <- struct{}{}
+			defer conn.Close()
+			if err != nil {
+				logrus.Errorf("listenForHandshake connection accept: %v", err)
+				return
+			}
+			_, err = conn.Write([]byte(SeedPhrase))
+			if err != nil {
+				logrus.Errorf("listenForHandshake writing CIDHost: %v\n", err)
+				return
+			}
+			logrus.Info("successful handshake with host switch")
+			done <- struct{}{}
 	}
 
 }
